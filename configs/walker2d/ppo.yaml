@@ -1,0 +1,13 @@
+environment_name: 'Walker2d-v5'
+agent:
+  type: 'PPO'
+  hyperparameters: {}
+training:
+  num_steps: 10000000
+logging:
+  use_wandb: true
+  wandb_project: 'rl-algos'
+  verbose: 10
+
+  video_dir: 'logs/walker2d/ppo'
+  save_video_frequency: 50

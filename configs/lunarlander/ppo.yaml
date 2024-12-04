@@ -1,0 +1,13 @@
+environment_name: 'LunarLander-v3'
+agent:
+  type: 'PPO'
+  hyperparameters: {}
+training:
+  num_steps: 100000
+logging:
+  use_wandb: false
+  wandb_project: 'rl-algos'
+  verbose: 10
+
+  video_dir: 'logs/lunarlander/ppo'
+  save_video_frequency: 50
