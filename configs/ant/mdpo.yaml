@@ -1,0 +1,13 @@
+environment_name: 'Ant'
+agent:
+  type: 'MDPO'
+  hyperparameters: {}
+training:
+  num_steps: 10000000
+logging:
+  use_wandb: true
+  wandb_project: 'rl-algos'
+  verbose: 10
+
+  video_dir: 'logs/ant/mdpo'
+  save_video_frequency: 100

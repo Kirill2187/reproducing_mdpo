@@ -21,3 +21,4 @@ wandb/
 .idea/
 
 example.ipynb
+stable-baselines3/

@@ -2,10 +2,12 @@ import argparse
 from config_loader import ConfigLoader
 from log_wrapper import LogWrapper
 from stable_baselines3 import PPO
+from stable_baselines3.mdpo_on import MDPO
 import gymnasium as gym
 
 algos = {
-    'PPO': PPO
+    'PPO': PPO,
+    'MDPO': MDPO,
 }
 
 
