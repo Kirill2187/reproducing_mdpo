@@ -65,11 +65,9 @@ class MDPO(OnPolicyAlgorithm):
         learning_rate: Union[float, Schedule] = 3e-4,
         n_steps: int = 2048,
         batch_size: int = 128,
-        n_epochs: int = 1,  # Number of epochs (full passes over the data)
-        sgd_steps: int = 10,  # Number of gradient ascent steps per minibatch (m in paper)
+        n_epochs: int = 10,  # analogous to m in paper
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
-        ent_coef: float = 0.0,
         vf_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         kl_coeff: Union[float, Schedule] = 0.1,  # 1 / t_k
@@ -93,7 +91,7 @@ class MDPO(OnPolicyAlgorithm):
             n_steps=n_steps,
             gamma=gamma,
             gae_lambda=gae_lambda,
-            ent_coef=ent_coef,
+            ent_coef=0,
             vf_coef=vf_coef,
             max_grad_norm=max_grad_norm,
             use_sde=use_sde,
@@ -129,8 +127,7 @@ class MDPO(OnPolicyAlgorithm):
                     f"Mini-batch size {batch_size} may cause truncated batches."
                 )
         self.batch_size = batch_size
-        self.n_epochs = n_epochs  # Number of epochs (full passes over the data)
-        self.sgd_steps = sgd_steps  # Number of gradient ascent steps per minibatch
+        self.n_epochs = n_epochs
         self.normalize_advantage = normalize_advantage
         self.kl_coeff = get_schedule_fn(kl_coeff)
         self._current_kl_coeff = self.kl_coeff(1.0)  # Initial KL coefficient
@@ -173,81 +170,68 @@ class MDPO(OnPolicyAlgorithm):
         # Training loop
         for epoch in range(self.n_epochs):
             for rollout_data in self.rollout_buffer.get(self.batch_size):
-                for _ in range(self.sgd_steps):
-                    actions = rollout_data.actions
-                    if isinstance(self.action_space, spaces.Discrete):
-                        actions = actions.long().flatten()
+                actions = rollout_data.actions
+                if isinstance(self.action_space, spaces.Discrete):
+                    actions = actions.long().flatten()
 
-                    # Zero gradients
-                    self.policy.optimizer.zero_grad()
+                # Evaluate current policy
+                values, log_prob, entropy = self.policy.evaluate_actions(
+                    rollout_data.observations, actions
+                )
+                values = values.flatten()
 
-                    # Evaluate current policy
-                    values, log_prob, entropy = self.policy.evaluate_actions(
-                        rollout_data.observations, actions
-                    )
-                    values = values.flatten()
-
-                    # Evaluate old policy
-                    with th.no_grad():
-                        old_distribution = old_policy.get_distribution(
-                            rollout_data.observations
-                        )
-                        old_log_prob = old_distribution.log_prob(actions)
-
-                    # Compute ratio
-                    ratio = th.exp(log_prob - old_log_prob.detach())
-
-                    # Compute KL divergence
-                    distribution = self.policy.get_distribution(
+                # Evaluate old policy
+                with th.no_grad():
+                    old_distribution = old_policy.get_distribution(
                         rollout_data.observations
                     )
-                    old_pytorch_dist = old_distribution.distribution
-                    new_pytorch_dist = distribution.distribution
+                    old_log_prob = old_distribution.log_prob(actions)
 
-                    kl_div = th.distributions.kl_divergence(
-                        old_pytorch_dist, new_pytorch_dist
-                    )
-                    kl_div = kl_div.mean()
+                # Compute ratio
+                ratio = th.exp(log_prob - old_log_prob.detach())
 
-                    # Compute policy loss
-                    policy_loss = -(
-                        (ratio * rollout_data.advantages).mean()
-                    ) + self._current_kl_coeff * kl_div
+                # Compute KL divergence
+                distribution = self.policy.get_distribution(
+                    rollout_data.observations
+                )
+                old_pytorch_dist = old_distribution.distribution
+                new_pytorch_dist = distribution.distribution
 
-                    # Entropy loss
-                    entropy_loss = (
-                        -th.mean(entropy)
-                        if entropy is not None
-                        else -th.mean(-log_prob)
-                    )
+                kl_div = th.distributions.kl_divergence(
+                    old_pytorch_dist, new_pytorch_dist
+                )
+                kl_div = kl_div.mean()
 
-                    # Value loss
-                    value_loss = F.mse_loss(rollout_data.returns, values)
+                # Compute policy loss
+                policy_loss = -(
+                    (ratio * rollout_data.advantages).mean()
+                ) + self._current_kl_coeff * kl_div
 
-                    # Total loss
-                    loss = (
-                        policy_loss
-                        + self.ent_coef * entropy_loss
-                        + self.vf_coef * value_loss
-                    )
+                # Value loss
+                value_loss = F.mse_loss(rollout_data.returns, values)
 
-                    # Backward pass
-                    loss.backward()
+                # Total loss
+                loss = (
+                    policy_loss
+                    + self.vf_coef * value_loss
+                )
 
-                    # Clip gradients
-                    th.nn.utils.clip_grad_norm_(
-                        self.policy.parameters(), self.max_grad_norm
-                    )
+                self.policy.optimizer.zero_grad()
+                loss.backward()
 
-                    # Optimizer step
-                    self.policy.optimizer.step()
+                # Clip gradients
+                th.nn.utils.clip_grad_norm_(
+                    self.policy.parameters(), self.max_grad_norm
+                )
 
-                    # Logging
-                    pg_losses.append(policy_loss.item())
-                    value_losses.append(value_loss.item())
-                    entropy_losses.append(entropy_loss.item())
-                    kl_divs.append(kl_div.item())
-                    losses.append(loss.item())
+                # Optimizer step
+                self.policy.optimizer.step()
+
+                # Logging
+                pg_losses.append(policy_loss.item())
+                value_losses.append(value_loss.item())
+                kl_divs.append(kl_div.item())
+                losses.append(loss.item())
 
             self._n_updates += 1
 
@@ -256,7 +240,6 @@ class MDPO(OnPolicyAlgorithm):
             self.rollout_buffer.values.flatten(), self.rollout_buffer.returns.flatten()
         )
 
-        self.logger.record("train/entropy_loss", np.mean(entropy_losses))
         self.logger.record("train/policy_gradient_loss", np.mean(pg_losses))
         self.logger.record("train/value_loss", np.mean(value_losses))
         self.logger.record("train/kl_divergence", np.mean(kl_divs))
